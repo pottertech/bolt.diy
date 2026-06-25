@@ -9,7 +9,7 @@ export class LLMManager {
   private static _instance: LLMManager;
   private _providers: Map<string, BaseProvider> = new Map();
   private _modelList: ModelInfo[] = [];
-  private readonly _env: any = {};
+  private _env: Record<string, string> = {};
 
   private constructor(_env: Record<string, string>) {
     this._registerProvidersFromDirectory();
@@ -19,6 +19,9 @@ export class LLMManager {
   static getInstance(env: Record<string, string> = {}): LLMManager {
     if (!LLMManager._instance) {
       LLMManager._instance = new LLMManager(env);
+    } else if (Object.keys(env).length > 0) {
+      // Update env on subsequent calls so Cloudflare Workers get fresh bindings
+      LLMManager._instance._env = env;
     }
 
     return LLMManager._instance;
@@ -83,7 +86,7 @@ export class LLMManager {
 
     let enabledProviders = Array.from(this._providers.values()).map((p) => p.name);
 
-    if (providerSettings) {
+    if (providerSettings && Object.keys(providerSettings).length > 0) {
       enabledProviders = enabledProviders.filter((p) => providerSettings[p].enabled);
     }
 
@@ -118,12 +121,14 @@ export class LLMManager {
           return dynamicModels;
         }),
     );
+    const staticModels = Array.from(this._providers.values()).flatMap((p) => p.staticModels || []);
+    const dynamicModelsFlat = dynamicModels.flat();
+    const dynamicModelKeys = dynamicModelsFlat.map((d) => `${d.name}-${d.provider}`);
+    const filteredStaticModels = staticModels.filter((m) => !dynamicModelKeys.includes(`${m.name}-${m.provider}`));
 
     // Combine static and dynamic models
-    const modelList = [
-      ...dynamicModels.flat(),
-      ...Array.from(this._providers.values()).flatMap((p) => p.staticModels || []),
-    ];
+    const modelList = [...dynamicModelsFlat, ...filteredStaticModels];
+    modelList.sort((a, b) => a.name.localeCompare(b.name));
     this._modelList = modelList;
 
     return modelList;
@@ -178,8 +183,12 @@ export class LLMManager {
         logger.error(`Error getting dynamic models ${provider.name} :`, err);
         return [];
       });
+    const dynamicModelsName = dynamicModels.map((d) => d.name);
+    const filteredStaticList = staticModels.filter((m) => !dynamicModelsName.includes(m.name));
+    const modelList = [...dynamicModels, ...filteredStaticList];
+    modelList.sort((a, b) => a.name.localeCompare(b.name));
 
-    return [...dynamicModels, ...staticModels];
+    return modelList;
   }
   getStaticModelListFromProvider(providerArg: BaseProvider) {
     const provider = this._providers.get(providerArg.name);
